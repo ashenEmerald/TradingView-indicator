@@ -1,0 +1,136 @@
+// ============================================================
+//  EMA 8 Single-Candle Pullback Indicator
+//  Strategy:
+//    • Uptrend  → price pulls back for ONE candle but closes
+//                 ABOVE the 8 EMA  → BUY signal
+//    • Downtrend → price pulls up  for ONE candle but closes
+//                 BELOW the 8 EMA → SELL signal
+//  Exit: as soon as price returns to the entry-candle level
+// ============================================================
+//@version=5
+indicator("EMA 8 Pullback Signal", overlay=true, max_labels_count=500)
+
+// ─── INPUTS ──────────────────────────────────────────────────
+emaLen        = input.int(8,    "EMA Length",            minval=1)
+swingLen      = input.int(5,    "Swing Lookback (bars)",  minval=2, tooltip="Bars each side used to detect swing highs/lows for market structure")
+showExitLine  = input.bool(true,"Show Entry-Level Exit Line")
+buyCol        = input.color(color.new(#26C6DA, 0),  "Buy Signal Color")
+sellCol       = input.color(color.new(#EF5350, 0), "Sell Signal Color")
+exitCol       = input.color(color.new(#FFA726, 60), "Exit Line Color")
+
+// ─── EMA ─────────────────────────────────────────────────────
+ema8 = ta.ema(close, emaLen)
+plot(ema8, "EMA 8", color=color.new(color.yellow, 0), linewidth=2)
+
+// ─── MARKET STRUCTURE  (higher-highs / lower-lows) ───────────
+// A simple structural bias: price is in an uptrend when the
+// most recent confirmed swing high is higher than the one
+// before it AND the most recent swing low is higher than the
+// one before it.  Downtrend is the mirror.
+
+swingHigh = ta.pivothigh(high, swingLen, swingLen)
+swingLow  = ta.pivotlow (low,  swingLen, swingLen)
+
+// Collect the last two confirmed swing highs / lows
+var float sh1 = na   // most recent
+var float sh2 = na   // second most recent
+var float sl1 = na
+var float sl2 = na
+
+if not na(swingHigh)
+    sh2 := sh1
+    sh1 := swingHigh
+
+if not na(swingLow)
+    sl2 := sl1
+    sl1 := swingLow
+
+// Trend bias
+bool upTrend   = not na(sh1) and not na(sh2) and not na(sl1) and not na(sl2) and (sh1 > sh2) and (sl1 > sl2)
+bool downTrend = not na(sh1) and not na(sh2) and not na(sl1) and not na(sl2) and (sh1 < sh2) and (sl1 < sl2)
+
+// ─── SINGLE-CANDLE PULLBACK DETECTION ────────────────────────
+// A pullback candle in an uptrend:
+//   • Previous candle was bullish (or at least not a down-close)
+//     AND moving in the trend direction
+//   • Current candle retraces (closes lower than previous close
+//     OR low dips toward EMA) but CLOSES ABOVE the 8 EMA
+//   • The NEXT candle (i.e. now we are one bar later) resumes
+//     the trend (closes above the pullback candle's high)
+//
+// We fire the signal on the BAR THAT CONFIRMS the pullback is
+// over — i.e. the candle that closes back above the pullback
+// candle's high (buy) or below its low (sell).
+
+// Identify a pullback candle (one bar ago) — it dipped toward
+// or below EMA but CLOSED above (buy) or below (sell) EMA.
+bool pullbackBullish =
+     close[1] < close[2]                // previous bar was a down-close (retrace)
+     and close[1] > ema8[1]             // but it stayed above EMA
+     and low[1]  <= ema8[1] * 1.005     // low came close to or touched EMA (within 0.5%)
+
+bool pullbackBearish =
+     close[1] > close[2]               // previous bar was an up-close (retrace against downtrend)
+     and close[1] < ema8[1]            // but stayed below EMA
+     and high[1] >= ema8[1] * 0.995    // high came close to EMA (within 0.5%)
+
+// Confirmation: current bar breaks back above the pullback candle's high (buy)
+//               or below its low (sell)
+bool buySignal  = upTrend   and pullbackBullish and close > high[1]
+bool sellSignal = downTrend and pullbackBearish and close < low[1]
+
+// ─── SIGNALS ─────────────────────────────────────────────────
+plotshape(buySignal,  title="Buy",  style=shape.labelup,
+          location=location.belowbar, color=buyCol,
+          textcolor=color.white, text="BUY",  size=size.normal)
+
+plotshape(sellSignal, title="Sell", style=shape.labeldown,
+          location=location.abovebar, color=sellCol,
+          textcolor=color.white, text="SELL", size=size.normal)
+
+// ─── EXIT LEVEL LINE ─────────────────────────────────────────
+// Draw a horizontal line at the entry candle's open/close
+// level.  Price returning here is the exit trigger.
+if showExitLine
+    if buySignal
+        // Entry candle is bar[0]; the level to watch for exit
+        // is the close of that candle (entry price proxy)
+        line.new(bar_index, close, bar_index + 20, close,
+                 color=exitCol, width=1,
+                 style=line.style_dashed,
+                 extend=extend.none)
+
+    if sellSignal
+        line.new(bar_index, close, bar_index + 20, close,
+                 color=exitCol, width=1,
+                 style=line.style_dashed,
+                 extend=extend.none)
+
+// ─── BACKGROUND TINT ─────────────────────────────────────────
+bgcolor(upTrend   ? color.new(color.teal,  93) : na, title="Uptrend bg")
+bgcolor(downTrend ? color.new(color.red,   93) : na, title="Downtrend bg")
+
+// ─── INFO TABLE ──────────────────────────────────────────────
+var table infoTable = table.new(position.top_right, 2, 4,
+     border_width=1,
+     border_color=color.new(color.gray, 70),
+     bgcolor=color.new(color.black, 80))
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Trend",    text_color=color.gray,   text_size=size.small)
+    table.cell(infoTable, 1, 0,
+         upTrend ? "▲ Up" : downTrend ? "▼ Down" : "── Neutral",
+         text_color=upTrend ? color.teal : downTrend ? color.red : color.gray,
+         text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "EMA 8",    text_color=color.gray,   text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(math.round(ema8, 2)),
+         text_color=color.yellow, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "Pullback ↑", text_color=color.gray, text_size=size.small)
+    table.cell(infoTable, 1, 2, pullbackBullish ? "✔ Detected" : "—",
+         text_color=pullbackBullish ? color.teal : color.gray, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "Pullback ↓", text_color=color.gray, text_size=size.small)
+    table.cell(infoTable, 1, 3, pullbackBearish ? "✔ Detected" : "—",
+         text_color=pullbackBearish ? color.red : color.gray, text_size=size.small)
